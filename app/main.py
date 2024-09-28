@@ -2,27 +2,28 @@ from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from multiprocessing import Process
 import mimetypes
-import json
 import urllib.parse
 import pathlib
 import socket
 import logging
 
-from pymongo.mongo_client import MongoClient
+from pymongo import MongoClient
 from pymongo.server_api import ServerApi
-
-uri = "mongodb://mongodb:27017"
 
 HTTPServer_Port = 3000
 UDP_IP = '127.0.0.1'
 UDP_PORT = 5000
+MONGO_URL = "mongodb://root:password@mongo/?retryWrites=true&w=majority"
 
 
 class HttpGetHandler(BaseHTTPRequestHandler):
-    # TODO Реалізувати логіку веб сервера для обробки статичних ресурсів, відправки вірних статус кодів та маршрутизації
-    # Документація наслідуваних методів з BaseHTTPRequestHandler: https://docs.python.org/3/library/http.server.html
     def do_POST(self):
-        pass
+        data = self.rfile.read(int(self.headers['Content-Length']))
+        logging.info(f"Received data: {data}")
+        send_data_to_socket(data)
+        self.send_response(302)
+        self.send_header('Location', '/')
+        self.end_headers()
 
     def do_GET(self):
         pr_url = urllib.parse.urlparse(self.path)
@@ -69,42 +70,55 @@ def run_http_server(server_class=HTTPServer, handler_class=HttpGetHandler):
         logging.error(e)
 
 
-# def send_data_to_socket(data):
-#     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-#     server = UDP_IP, UDP_PORT
-#     # TODO Дописати відправку даних
+def send_data_to_socket(data):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server = UDP_IP, UDP_PORT
+    sock.sendto(data, server)
+    sock.close()
 
 
-# def save_data(data):
-#     client = MongoClient(uri, server_api=ServerApi("1"))
-#     db = client.DB_NAME
-#
-#     # Дописати логіку збереження даних в БД з відповідними вимогами до структурою документу
-#     """
-#     {
-# 	    "date": "2024-04-28 20:21:11.812177",
-#         "username": "Who",
-# 	    "message": "What"
-#     }
-#     """
-#     # Ключ "date" кожного повідомлення — це час отримання повідомлення: datetime.now()
-#     data_parse = urllib.parse.unquote_plus(data.decode())
-#
-#
-# def run_socket_server(ip, port):
-#     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-#     server = ip, port
-#     sock.bind(server)
-#     # TODO Дописати логіку прийняття даних та їх збереження в БД
+def save_data(data):
+    connection = MongoClient(
+        MONGO_URL,
+        server_api=ServerApi("1"),
+    )
+
+    with connection as client:
+        result = client.my_application.messages.insert_one(data)
+        print(result)
+
+
+def run_socket_server():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server = UDP_IP, UDP_PORT
+    sock.bind(server)
+    try:
+        while True:
+            data, address = sock.recvfrom(1024)
+            logging.info(f"Received data: {data.decode()} from: {address}")
+            data_parse = urllib.parse.unquote_plus(data.decode())
+            data_dict = {key: value for key, value in [el.split('=') for el in data_parse.split('&')]}
+            row = {
+                "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+                "username": data_dict.get("username"),
+                "message": data_dict.get("message")
+            }
+            save_data(row)
+
+
+    except KeyboardInterrupt:
+        logging.info("Destroy server")
+    finally:
+        logging.info("Server is shutting down")
+        sock.close()
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO, format='%(threadName)s %(message)s')
+    logging.basicConfig(level=logging.DEBUG, format='%(threadName)s %(message)s')
 
-    # TODO Зробити два процеса для кожного з серверів
+    logging.info("Starting HTTP and Socket servers")
     http_server_process = Process(target=run_http_server)
     http_server_process.start()
 
-    # socket_server_process = Process()
-    # socket_server_process.start()
-
+    socket_server_process = Process(target=run_socket_server)
+    socket_server_process.start()
